@@ -20,7 +20,6 @@ FLAGS = flags.FLAGS
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
 
-
 def perform_triplet_training(
     data,
     output_dir,
@@ -31,10 +30,12 @@ def perform_triplet_training(
     g_zoo,
     train_cb=None,
 ):
-    """Perform Triplet-BGRL (T-BGRL) training.
-    Works for both the transductive and inductive settings.
+    """
+    Realiza el entrenamiento Triplet-BGRL (T-BGRL).
+    Funciona tanto para configuraciones transductivas como inductivas.
     """
 
+    # Composición de las transformaciones para cada vista del grafo
     transform_1 = compose_transforms(
         FLAGS.graph_transforms,
         drop_edge_p=FLAGS.drop_edge_p_1,
@@ -49,6 +50,7 @@ def perform_triplet_training(
         FLAGS.negative_transforms, drop_edge_p=0.95, drop_feat_p=0.95
     )
 
+    # Inicialización del encoder y predictor
     encoder = g_zoo.get_model(
         FLAGS.graph_encoder_model,
         input_size,
@@ -64,40 +66,44 @@ def perform_triplet_training(
     model = TripletBgrl(encoder, predictor, has_features=has_features).to(device)
     neg_lambda = FLAGS.neg_lambda
 
+    # Optimizador
     optimizer = AdamW(
         model.trainable_parameters(), lr=FLAGS.lr, weight_decay=FLAGS.weight_decay
     )
 
-    # scheduler
+    # Schedulers para el learning rate y momentum
     lr_scheduler = CosineDecayScheduler(FLAGS.lr, FLAGS.lr_warmup_epochs, FLAGS.epochs)
     mm_scheduler = CosineDecayScheduler(1 - FLAGS.mm, 0, FLAGS.epochs)
 
     #####
-    # Train & eval functions
+    # Funciones de entrenamiento y evaluación
     #####
     def full_train(step):
-        """Peform full-batch T-BGRL training"""
+        """Realiza un entrenamiento de T-BGRL en modo full-batch"""
         model.train()
 
-        # update learning rate
+        # Actualiza el learning rate
         lr = lr_scheduler.get(step)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-        # update momentum
+        # Actualiza el momentum
         mm = 1 - mm_scheduler.get(step)
 
         optimizer.zero_grad()
 
-        # handle featureless datasets
+        # Si el dataset no tiene features, se generan aleatoriamente
         if not has_features:
             data.x = encoder.get_node_feats().weight.data.clone().detach()
+        # Se generan tres vistas del grafo con diferentes transformaciones
         x1, x2, x3 = transform_1(data), transform_2(data), transform_3(data)
 
+        # Forward pass para obtener representaciones y predicciones
         q1, y2 = model(x1, x2)
         q2, y1 = model(x2, x1)
         neg_y = model.forward_target(x3)
 
+        # Cálculo de similitudes coseno entre las representaciones
         sim1 = F.cosine_similarity(q1, y2.detach()).mean()
         sim2 = F.cosine_similarity(q2, y1.detach()).mean()
         neg_sim1 = F.cosine_similarity(q1, neg_y.detach()).mean()
@@ -109,6 +115,7 @@ def perform_triplet_training(
             'neg_sim2': neg_sim2,
         }
 
+        # Cálculo de la función de pérdida triplet
         loss = neg_lambda * (neg_sim1 + neg_sim2) - (1 - neg_lambda) * (sim1 + sim2)
 
         loss.backward()
@@ -116,7 +123,7 @@ def perform_triplet_training(
         optimizer.step()
         model.update_target_network(mm)
 
-        # log scalars
+        # Registro de métricas en wandb
         wandb.log(
             {
                 'curr_lr': lr,
@@ -131,27 +138,31 @@ def perform_triplet_training(
         return loss
 
     def batch_train(loader, epoch):
-        """Peform minibatch T-BGRL training"""
+        """Realiza un entrenamiento de T-BGRL en modo minibatch"""
         model.train()
 
-        # update learning rate
+        # Actualiza el learning rate
         lr = lr_scheduler.get(epoch)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-        # update momentum
+        # Actualiza el momentum
         mm = 1 - mm_scheduler.get(epoch)
 
+        # Itera sobre los batches del loader
         for batch in tqdm(iterable=loader, desc='Batches', leave=False):
             batch = batch.to(device)
             optimizer.zero_grad()
 
+            # Se generan tres vistas del batch
             x1, x2, x3 = transform_1(batch), transform_2(batch), transform_3(batch)
 
+            # Forward pass
             q1, y2 = model(x1, x2)
             q2, y1 = model(x2, x1)
             neg_y = model.forward_target(x3)
 
+            # Cálculo de similitudes coseno
             sim1 = F.cosine_similarity(q1, y2.detach()).mean()
             sim2 = F.cosine_similarity(q2, y1.detach()).mean()
             neg_sim1 = F.cosine_similarity(q1, neg_y.detach()).mean()
@@ -163,9 +174,11 @@ def perform_triplet_training(
                 'neg_sim2': neg_sim2,
             }
 
+            # Cálculo de la función de pérdida triplet
             loss = neg_lambda * (neg_sim1 + neg_sim2) - (1 - neg_lambda) * (sim1 + sim2)
             loss.backward()
 
+            # Registro de métricas en wandb
             wandb.log(
                 {
                     'curr_lr': lr,
@@ -177,15 +190,16 @@ def perform_triplet_training(
             )
 
         optimizer.step()
-        # update target network
+        # Actualiza la red objetivo
         model.update_target_network(mm)
 
     best_loss = None
     last_update_epoch = 0
     times = []
 
-    # training loops
+    # Ciclo principal de entrenamiento
     if FLAGS.batch_graphs:
+        # Si se usa entrenamiento por lotes de grafos
         times = []
         train_loader = NeighborLoader(
             data,
@@ -205,6 +219,7 @@ def perform_triplet_training(
             elapsed = time.time_ns() - st_time
             times.append(elapsed)
     else:
+        # Entrenamiento full-batch
         for epoch in tqdm(range(1, FLAGS.epochs + 1)):
             if train_cb is not None:
                 train_cb(epoch - 1, model)
@@ -215,6 +230,7 @@ def perform_triplet_training(
             elapsed = time.time_ns() - st_time
             times.append(elapsed)
 
+            # Early stopping: guarda el mejor modelo según la pérdida
             if best_loss is None or (best_loss - train_loss >= 0.01):
                 best_loss = train_loss
                 last_update_epoch = epoch
@@ -222,20 +238,23 @@ def perform_triplet_training(
                 FLAGS.training_early_stop
                 and epoch - last_update_epoch > FLAGS.training_early_stop_patience
             ):
-                log.info('Early stopping performed!')
+                log.info('¡Early stopping realizado!')
                 break
 
+    # Obtiene estadísticas de tiempo de entrenamiento
     time_bundle = get_time_bundle(times)
 
-    # save encoder weights
+    # Guarda los pesos del encoder entrenado
     torch.save(
         {'model': model.online_encoder.state_dict()},
         os.path.join(output_dir, f'triplet-{FLAGS.dataset}.pt'),
     )
     encoder = copy.deepcopy(model.online_encoder.eval())
+    # Calcula las representaciones finales de los datos
     representations = compute_data_representations_only(
         encoder, data, device, has_features=has_features
     )
+    # Guarda las representaciones
     torch.save(
         representations, os.path.join(output_dir, f'triplet-{FLAGS.dataset}-repr.pt')
     )

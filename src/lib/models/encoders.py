@@ -4,14 +4,13 @@ from torch_geometric.nn import BatchNorm, GCNConv, LayerNorm, Sequential
 from torch_geometric.data import Data
 from enum import Enum
 
-
+# Modelos de codificadores disponibles
 class EncoderModel(Enum):
     GCN = 'gcn'
 
-
 class GCN(nn.Module):
-    """Basic GCN encoder.
-    This is based off of the official BGRL encoder implementation.
+    """Codificador GCN básico.
+    Basado en la implementación oficial del codificador BGRL.
     """
 
     def __init__(
@@ -27,6 +26,7 @@ class GCN(nn.Module):
     ):
         super().__init__()
 
+        # batchnorm y layernorm no pueden ser ambos True
         assert batchnorm != layernorm
         assert len(layer_sizes) >= 2
         self.n_layers = len(layer_sizes)
@@ -38,13 +38,16 @@ class GCN(nn.Module):
         relus = []
         batchnorms = []
 
+        # Construcción de las capas del modelo
         for in_dim, out_dim in zip(layer_sizes[:-1], layer_sizes[1:]):
             if batched:
+                # En modo batched, se agregan las capas a listas separadas
                 layers.append(GCNConv(in_dim, out_dim))
                 relus.append(nn.PReLU())
                 if batchnorm:
                     batchnorms.append(BatchNorm(out_dim, momentum=batchnorm_mm))
             else:
+                # En modo no batched, se usa Sequential de torch_geometric
                 layers.append(
                     (GCNConv(in_dim, out_dim), 'x, edge_index -> x'),
                 )
@@ -56,31 +59,38 @@ class GCN(nn.Module):
 
                 layers.append(nn.PReLU())
 
+        # Inicialización de las capas según si es batched o no
         if batched:
+            # Se usan listas de módulos para cada tipo de capa
             self.convs = nn.ModuleList(layers)
             self.relus = nn.ModuleList(relus)
             self.batchnorms = nn.ModuleList(batchnorms)
         else:
+            # Se usa un modelo secuencial para el caso no batched
             self.model = Sequential('x, edge_index', layers)
 
         self.use_feat = use_feat
+        # Si no se usan características, se inicializan embeddings para los nodos
         if not self.use_feat:
             self.node_feats = nn.Embedding(n_nodes, layer_sizes[1])
 
     def split_forward(self, x, edge_index):
-        """Convenience function to perform a forward pass on a feature matrix
-        and edge index separately without needing to create a Data object.
+        """Función conveniente para hacer un forward con una matriz de características
+        y edge_index por separado sin necesidad de crear un objeto Data.
         """
         return self(Data(x, edge_index))
 
     def forward(self, data):
+        # Forward para el caso no batched
         if not self.batched:
             if self.weight_standardization:
                 self.standardize_weights()
             if self.use_feat:
+                # Si se usan características, se pasan al modelo
                 return self.model(data.x, data.edge_index)
+            # Si no, se usan los embeddings de los nodos
             return self.model(self.node_feats.weight.data.clone(), data.edge_index)
-        # otherwise, batched
+        # Forward para el caso batched
         x = data.x
         for i, conv in enumerate(self.convs):
             x = conv(x, data.edge_index)
@@ -89,9 +99,11 @@ class GCN(nn.Module):
         return x
 
     def reset_parameters(self):
+        # Reinicia los parámetros del modelo
         self.model.reset_parameters()
 
     def standardize_weights(self):
+        # Estandariza los pesos de las capas GCN (excepto la primera)
         skipped_first_conv = False
         for m in self.model.modules():
             if isinstance(m, GCNConv):
@@ -104,22 +116,23 @@ class GCN(nn.Module):
                 m.lin.weight.data = weight
 
     def get_node_feats(self):
+        # Devuelve los embeddings de nodos si existen
         if hasattr(self, 'node_feats'):
             return self.node_feats
         return None
 
     @property
     def num_layers(self):
+        # Número de capas del modelo
         return self.n_layers
 
-
 class EncoderZoo:
-    """Returns an encoder of the specified type.
-    Reads flags from an instance of absl.FlagValues.
-    See ../lib/flags.py for flag defaults and descriptions.
+    """Devuelve un codificador del tipo especificado.
+    Lee los flags desde una instancia de absl.FlagValues.
+    Ver ../lib/flags.py para los valores y descripciones por defecto.
     """
 
-    # Note: we use the value of the enums since we read them in as flags
+    # Nota: usamos el valor de los enums ya que los leemos como flags
     models = {EncoderModel.GCN.value: GCN}
 
     def __init__(self, flags):
@@ -136,6 +149,7 @@ class EncoderZoo:
     ):
         flags = self.flags
         if model_class == GCN:
+            # Inicializa el modelo GCN con los parámetros dados por los flags
             return GCN(
                 [input_size] + flags.graph_encoder_layer_dims,
                 batchnorm=True,
@@ -146,11 +160,11 @@ class EncoderZoo:
 
     @staticmethod
     def check_model(model_name: str):
-        """Checks if a model with the given name exists.
-        Raises an error if not.
+        """Verifica si existe un modelo con el nombre dado.
+        Lanza un error si no existe.
         """
         if model_name not in EncoderZoo.models:
-            raise ValueError(f'Unknown encoder model: "{model_name}"')
+            raise ValueError(f'Modelo de codificador desconocido: "{model_name}"')
         return True
 
     def get_model(
@@ -162,6 +176,7 @@ class EncoderZoo:
         n_feats: int,
         batched: bool = False,
     ):
+        # Devuelve una instancia del modelo solicitado
         EncoderZoo.check_model(model_name)
         return self._init_model(
             EncoderZoo.models[model_name],

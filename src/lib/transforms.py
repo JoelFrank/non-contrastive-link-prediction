@@ -7,18 +7,19 @@ from torch_geometric.transforms import Compose
 from torch_geometric.utils import negative_sampling
 from torch_geometric.utils.dropout import dropout_adj
 
-
+# Elimina características de los nodos con probabilidad p.
 class DropFeatures:
-    r"""Drops node features with probability p."""
+    r"""Elimina características de los nodos con probabilidad p."""
 
     def __init__(self, p=None):
         assert p is not None
         assert 0.0 < p < 1.0, (
-            'Dropout probability has to be between 0 and 1, but got %.2f' % p
+            'La probabilidad de dropout debe estar entre 0 y 1, pero se obtuvo %.2f' % p
         )
         self.p = p
 
     def __call__(self, data):
+        # Crea una máscara para eliminar columnas de características con probabilidad p
         drop_mask = (
             torch.empty(
                 (data.x.size(1),), dtype=torch.float32, device=data.x.device
@@ -32,8 +33,9 @@ class DropFeatures:
         return f'{self.__class__.__name__}(p={self.p})'
 
 
+# Revuelve aleatoriamente las filas de la matriz de características.
 class ScrambleFeatures:
-    r"""Randomly scrambles the rows of the feature matrix."""
+    r"""Revuelve aleatoriamente las filas de la matriz de características."""
 
     def __call__(self, data):
         row_perm = torch.randperm(data.x.size(0))
@@ -41,14 +43,17 @@ class ScrambleFeatures:
         return data
 
     def __repr__(self):
-        return f'{self.__class__.__name__}(p={self.p})'
+        # Nota: self.p no existe aquí, este __repr__ podría causar error.
+        return f'{self.__class__.__name__}()'
 
 
+# Aleatoriza completamente el índice de aristas (edges).
 class RandomEdges:
-    r"""Completely randomize the edge index"""
+    r"""Aleatoriza completamente el índice de aristas."""
 
     def __call__(self, data):
         n = data.num_nodes
+        # Genera un nuevo edge_index aleatorio con el mismo tamaño
         data.edge_index = torch.randint_like(data.edge_index, n - 1)
         return data
 
@@ -56,13 +61,15 @@ class RandomEdges:
         return f'{self.__class__.__name__}()'
 
 
+# Aleatoriza el índice de aristas y el número de aristas en un rango.
 class RandomRangeEdges:
-    r"""Completely randomize the edge index"""
+    r"""Aleatoriza completamente el índice de aristas y el número de aristas."""
 
     def __call__(self, data):
         n = data.num_nodes
         n_edges = data.edge_index.size(1)
 
+        # Elige aleatoriamente el número de aristas en un rango de 75% a 125% del original
         n_edges = random.randint(math.ceil(n_edges * 0.75), math.ceil(n_edges * 1.25))
         data.edge_index = torch.randint(
             0, n - 1, (2, n_edges), dtype=data.edge_index.dtype
@@ -73,13 +80,14 @@ class RandomRangeEdges:
         return f'{self.__class__.__name__}()'
 
 
+# Elimina aristas con probabilidad p.
 class DropEdges:
-    r"""Drops edges with probability p."""
+    r"""Elimina aristas con probabilidad p."""
 
     def __init__(self, p, force_undirected=False):
         assert p is not None
         assert 0.0 < p < 1.0, (
-            'Dropout probability has to be between 0 and 1, but got %.2f' % p
+            'La probabilidad de dropout debe estar entre 0 y 1, pero se obtuvo %.2f' % p
         )
 
         self.p = p
@@ -89,6 +97,7 @@ class DropEdges:
         edge_index = data.edge_index
         edge_attr = data.edge_attr if 'edge_attr' in data else None
 
+        # Aplica dropout a las aristas
         edge_index, edge_attr = dropout_adj(
             edge_index, edge_attr, p=self.p, force_undirected=self.force_undirected
         )
@@ -102,19 +111,22 @@ class DropEdges:
         return f'{self.__class__.__name__}()'
 
 
+# Añade aristas aleatorias al grafo.
 class AddEdges:
-    """Perform random edge addition."""
+    """Realiza la adición aleatoria de aristas."""
 
     def __init__(self, sample_size_ratio=0.1):
         self.sample_size_ratio = sample_size_ratio
 
     def __call__(self, data):
         edge_index = data.edge_index
+        # Calcula el número de aristas negativas a añadir
         n_samples = round(self.sample_size_ratio * edge_index)
         neg_edges = negative_sampling(
             data.edge_index, num_nodes=data.num_nodes, num_neg_samples=n_samples
         )
 
+        # Añade las aristas negativas al grafo
         edge_index = torch.cat((edge_index, neg_edges))
         data.edge_index = edge_index
         return data
@@ -123,8 +135,9 @@ class AddEdges:
         return f'{self.__class__.__name__}(sample_size_ratio={self.sample_size_ratio})'
 
 
+# Aleatoriza completamente la matriz de características (manteniendo el tamaño).
 class RandomizeFeatures:
-    """Completely randomize the feature matrix (maintain the same size)."""
+    """Aleatoriza completamente la matriz de características (mantiene el mismo tamaño)."""
 
     def __init__(self):
         pass
@@ -137,6 +150,7 @@ class RandomizeFeatures:
         return f'{self.__class__.__name__}()'
 
 
+# Diccionario de transformaciones válidas para augmentaciones.
 VALID_TRANSFORMS = dict(
     {
         'standard': ['DropEdges', 'DropFeatures'],
@@ -149,6 +163,7 @@ VALID_TRANSFORMS = dict(
     }
 )
 
+# Diccionario de transformaciones válidas para corrupciones.
 VALID_NEG_TRANSFORMS = dict(
     {
         'heavy-sparsify': ['DropEdges', 'DropFeatures'],
@@ -166,11 +181,11 @@ VALID_NEG_TRANSFORMS = dict(
     }
 )
 
-
+# Permite elegir aleatoriamente entre varias transformaciones al llamar la clase.
 class ChooserTransformation:
-    """Consists of multiple transformations.
-    When this transform is called, each of those transforms is selected and called with
-    uniform probability. This allows for alternating transforms during model training.
+    """Consiste en múltiples transformaciones.
+    Cuando se llama a esta transformación, se selecciona y aplica una de ellas con probabilidad uniforme.
+    Esto permite alternar transformaciones durante el entrenamiento del modelo.
     """
 
     def __init__(self, transformations, transformation_args):
@@ -181,6 +196,7 @@ class ChooserTransformation:
         self.transformations_str = ',\n'.join([str(x) for x in transformations])
 
     def __call__(self, data):
+        # Selecciona aleatoriamente una transformación y la aplica
         transformation = random.choice(self.transformations)
         return transformation(data)
 
@@ -188,11 +204,12 @@ class ChooserTransformation:
         return f'{self.__class__.__name__}({self.transformations_str})'
 
 
+# Función para componer transformaciones a partir de un nombre de transformación.
 def compose_transforms(transform_name, drop_edge_p, drop_feat_p, create_copy=True):
-    """Given a flag-friendly transform name, returns the corresponding transformation object.
-    Note that transforms include both augmentations and corruptions.
-    The dictionary of valid augmentations can be found in `VALID_TRANSFORMS`.
-    The dictionary of valid corruptions can be foudn in `VALID_NEG_TRANSFORMS`.
+    """Dado un nombre de transformación, retorna el objeto de transformación correspondiente.
+    Las transformaciones incluyen tanto aumentaciones como corrupciones.
+    El diccionario de aumentaciones válidas está en `VALID_TRANSFORMS`.
+    El diccionario de corrupciones válidas está en `VALID_NEG_TRANSFORMS`.
     """
 
     if transform_name in VALID_TRANSFORMS:
@@ -200,9 +217,9 @@ def compose_transforms(transform_name, drop_edge_p, drop_feat_p, create_copy=Tru
     elif transform_name in VALID_NEG_TRANSFORMS:
         catalog = VALID_NEG_TRANSFORMS[transform_name]
     else:
-        raise ValueError('Unknown transform_name: ', transform_name)
+        raise ValueError('Nombre de transformación desconocido: ', transform_name)
 
-    # Create matching of transforms -> features
+    # Mapeo de nombres de transformaciones a clases y argumentos
     feats = {
         'DropEdges': (DropEdges, [drop_edge_p]),
         'DropFeatures': (DropFeatures, [drop_feat_p]),
@@ -236,10 +253,13 @@ def compose_transforms(transform_name, drop_edge_p, drop_feat_p, create_copy=Tru
 
     transforms = []
     if create_copy:
+        # Añade una copia profunda para evitar modificar el objeto original
         transforms.append(copy.deepcopy)
 
+    # Añade las transformaciones seleccionadas según el catálogo
     for transform_name in catalog:
         transform_class, transform_feats = feats[transform_name]
         transforms.append(transform_class(*transform_feats))
 
+    # Devuelve la composición de transformaciones
     return Compose(transforms)
